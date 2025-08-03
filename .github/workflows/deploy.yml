@@ -1,0 +1,162 @@
+# 🚀 GitHub Actions 自动部署配置
+# 功能：自动构建镜像 → 推送GitHub Container Registry → 部署到GitHub Pages
+
+name: 📊 部署个人仪表盘
+
+# 触发条件：推送到main分支或手动触发
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:  # 允许手动触发
+
+# 环境变量
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # 🏗️ 阶段1：构建和测试
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      
+    steps:
+      - name: 📥 检出代码
+        uses: actions/checkout@v4
+        
+      - name: 🔧 设置Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        
+      - name: 📦 登录GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: 🏷️ 提取元数据
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+            
+      - name: 🏗️ 构建并推送镜像
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # 🌐 阶段2：部署到GitHub Pages（静态部署）
+  deploy-pages:
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+      
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+      
+    steps:
+      - name: 📥 检出代码
+        uses: actions/checkout@v4
+        
+      - name: 🔧 设置Pages
+        uses: actions/configure-pages@v4
+        
+      - name: 📦 上传静态文件
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: '.'
+          
+      - name: 🚀 部署到Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+  # 🔍 阶段3：健康检查
+  health-check:
+    runs-on: ubuntu-latest
+    needs: deploy-pages
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: ⏳ 等待部署完成
+        run: sleep 30
+        
+      - name: 🔍 健康检查
+        run: |
+          echo "🔍 检查部署状态..."
+          curl -f https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/ || exit 1
+          echo "✅ 部署成功！"
+
+  # 📊 阶段4：更新README（可选）
+  update-docs:
+    runs-on: ubuntu-latest
+    needs: deploy-pages
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: 📥 检出代码
+        uses: actions/checkout@v4
+        
+      - name: 📝 更新README部署信息
+        run: |
+          cat > README.md << EOF
+          # 🚀 个人数字仪表盘
+          
+          ## 📍 在线访问
+          **访问地址**: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+          
+          ## 🎯 功能特色
+          - ✨ 响应式仪表盘布局
+          - 🔍 智能搜索和分类
+          - ⭐ 个人收藏夹
+          - 📋 最近使用记录
+          - 📱 手机/平板/电脑完美适配
+          
+          ## 🛠️ 技术栈
+          - **前端**: HTML5 + CSS3 + ES6
+          - **图标**: Font Awesome 6
+          - **部署**: GitHub Pages + GitHub Actions
+          - **构建**: Docker (可选)
+          
+          ## 🔄 自动部署
+          每次推送到 `main` 分支会自动触发部署，无需手动操作！
+          
+          ## 📦 Docker使用
+          ```bash
+          # 本地运行
+          docker-compose up -d
+          
+          # 访问 http://localhost:8080
+          ```
+          
+          ## 🎨 个性化配置
+          修改 `personal-dashboard.html` 中的服务列表即可！
+          
+          ## 📊 部署状态
+          ![Deploy Status](https://github.com/${{ github.repository }}/workflows/📊%20部署个人仪表盘/badge.svg)
+          EOF
+          
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add README.md
+          git diff --staged --quiet || git commit -m "📚 更新README部署信息"
+          git push
